@@ -26,7 +26,11 @@ The server implements one tool:
 
 ## Configuration
 
-[TODO: Add configuration details specific to your implementation]
+The bonk-mcp server can be configured in Claude Desktop by adding it to the MCP servers configuration. You'll need to provide:
+- Path to the bonk-mcp directory
+- Environment variables:
+  - `KEYPAIR`: Your Solana keypair
+  - `RPC_URL`: Solana RPC endpoint (e.g., https://api.mainnet-beta.solana.com)
 
 ## Quickstart
 
@@ -39,16 +43,21 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 
 <details>
   <summary>Development/Unpublished Servers Configuration</summary>
-  ```
+  
+  ```json
   "mcpServers": {
     "bonk-mcp": {
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/wicked/Desktop/work/bonk-mcp/bonk-mcp",
+        "<PATH_TO_BONK_MCP_DIRECTORY>/bonk-mcp",
         "run",
         "bonk-mcp"
-      ]
+      ],
+      "env": {
+        "KEYPAIR": "<YOUR_SOLANA_KEYPAIR>",
+        "RPC_URL": "https://api.mainnet-beta.solana.com"
+      }
     }
   }
   ```
@@ -56,13 +65,18 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 
 <details>
   <summary>Published Servers Configuration</summary>
-  ```
+  
+  ```json
   "mcpServers": {
     "bonk-mcp": {
       "command": "uvx",
       "args": [
         "bonk-mcp"
-      ]
+      ],
+      "env": {
+        "KEYPAIR": "<YOUR_SOLANA_KEYPAIR>",
+        "RPC_URL": "https://api.mainnet-beta.solana.com"
+      }
     }
   }
   ```
@@ -100,12 +114,10 @@ Note: You'll need to set PyPI credentials via environment variables or command f
 Since MCP servers run over stdio, debugging can be challenging. For the best debugging
 experience, we strongly recommend using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector).
 
-
 You can launch the MCP Inspector via [`npm`](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) with this command:
 
 ```bash
-npx @modelcontextprotocol/inspector uv --directory /Users/wicked/Desktop/work/bonk-mcp/bonk-mcp run bonk-mcp
+npx @modelcontextprotocol/inspector uv --directory <PATH_TO_BONK_MCP_DIRECTORY>/bonk-mcp run bonk-mcp
 ```
-
 
 Upon launching, the Inspector will display a URL that you can access in your browser to begin debugging.
