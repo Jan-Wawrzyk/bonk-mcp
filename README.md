@@ -104,3 +104,6 @@ npx @modelcontextprotocol/inspector uv --directory <PATH_TO_BONK_MCP_DIRECTORY>/
 ```
 
 Upon launching, the Inspector will display a URL that you can access in your browser to begin debugging.
+
+# Core contributor:
+[0xwckd](https://github.com/0xwckd)
