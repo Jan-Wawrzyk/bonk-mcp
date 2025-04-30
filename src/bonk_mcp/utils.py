@@ -75,7 +75,7 @@ async def send_and_confirm_transaction(txn: Transaction, *signers, skip_prefligh
             status = await client.confirm_transaction(txn_sig.value)
             return status
         else:
-            return True
+            return txn_sig.value
     except Exception as e:
         print(f"Transaction error: {traceback.format_exc()}")
         return False
@@ -309,7 +309,7 @@ def calculate_tokens_receive(sol_amount, previous_sol=30, slippage=5):
     new_tokens = INITIAL_TOKENS - (K / (new_lamports / LAMPORTS_PER_SOL))
 
     # Calculate difference in tokens
-    tokens_received = (new_tokens - current_tokens) / TOKEN_DECIMALS
+    tokens_received = (new_tokens - current_tokens) / TOKEN_DECIMALS * 1
     max_sol_cost = sol_amount * (1 + slippage/100)
 
     return {
@@ -405,116 +405,9 @@ async def get_close_wsol_instruction(
 
     return close_wsol_account_ix
 
-
-async def create_address_lookup_table(
-    payer_pubkey: Pubkey,
-    addresses: list[Pubkey]
-) -> tuple[Pubkey, list[Instruction]]:
+async def get_token_account_balance(token_account: Pubkey) -> int:
     """
-    Create an address lookup table for the given addresses
-
-    Args:
-        payer_pubkey: The payer for the table creation
-        addresses: List of addresses to include in the table
-
-    Returns:
-        Tuple of (lookup table address, instructions to create and extend the table)
+    Get the balance of a token account
     """
-    from solders.address_lookup_table_account import AddressLookupTableAccount
-    from solders.address_lookup_table import (
-        create_lookup_table,
-        extend_lookup_table,
-        CreateLookupTableParams,
-        ExtendLookupTableParams
-    )
-
-    # Get recent slot for table creation
-    slot = (await client.get_slot()).value
-
-    # Create the lookup table instruction
-    create_lookup_params = CreateLookupTableParams(
-        authority=payer_pubkey,
-        payer=payer_pubkey,
-        recent_slot=slot,
-    )
-    create_ix, lookup_table_address = create_lookup_table(create_lookup_params)
-
-    # Extend the lookup table with our addresses
-    extend_lookup_params = ExtendLookupTableParams(
-        addresses=addresses,
-        authority=payer_pubkey,
-        lookup_table=lookup_table_address,
-        payer=payer_pubkey
-    )
-    extend_ix = extend_lookup_table(extend_lookup_params)
-
-    return lookup_table_address, [create_ix, extend_ix]
-
-
-async def send_transaction_with_alt(
-    txn: Transaction,
-    address_lookup_tables: list[Pubkey],
-    *signers,
-    skip_preflight: bool = True
-) -> bool:
-    """
-    Send and confirm a transaction using address lookup tables
-
-    Args:
-        txn: The transaction to send
-        address_lookup_tables: List of ALT addresses to look up
-        signers: Transaction signers
-        skip_preflight: Whether to skip preflight checks
-
-    Returns:
-        True if transaction was successful, False otherwise
-    """
-    from solders.versioned_transaction import VersionedTransaction
-    from solders.message import to_versioned_message
-    from solders.address_lookup_table_account import AddressLookupTableAccount
-
-    try:
-        # Get address lookup tables
-        alt_accounts = []
-        for alt_pubkey in address_lookup_tables:
-            alt_account = await client.get_account_info(alt_pubkey)
-            if alt_account.value is not None:
-                # Convert to AddressLookupTableAccount
-                alt_accounts.append(
-                    AddressLookupTableAccount(
-                        key=alt_pubkey,
-                        addresses=alt_account.value.data.addresses
-                    )
-                )
-
-        # Convert to versioned transaction
-        versioned_message = to_versioned_message(
-            txn._solders.message,
-            address_lookup_table_accounts=alt_accounts
-        )
-
-        # Sign the transaction
-        signatures = []
-        for signer in signers:
-            signatures.append(signer.sign_message(
-                versioned_message.serialize()))
-
-        versioned_txn = VersionedTransaction(
-            message=versioned_message,
-            signatures=signatures
-        )
-
-        # Send transaction
-        txn_sig = await client.send_transaction(
-            versioned_txn.serialize(),
-            opts=TxOpts(skip_preflight=skip_preflight, max_retries=3)
-        )
-        print("Transaction Signature:", txn_sig.value)
-
-        # Wait for confirmation
-        status = await client.confirm_transaction(txn_sig.value)
-        return status.value.err is None
-
-    except Exception as e:
-        print(f"Transaction error: {traceback.format_exc()}")
-        return False
+    balance = await client.get_token_account_balance(token_account)
+    return balance.value.amount

@@ -6,8 +6,8 @@ from mcp.server import NotificationOptions, Server
 from pydantic import AnyUrl
 import mcp.server.stdio
 
-# Import the token launcher tool
-from bonk_mcp.tools import token_launcher_tool
+# Import the tools
+from bonk_mcp.tools import token_launcher_tool, token_buyer_tool
 
 # Store notes as a simple key-value dict to demonstrate state management
 notes: dict[str, str] = {}
@@ -108,7 +108,8 @@ async def handle_list_tools() -> list[types.Tool]:
     Each tool specifies its arguments using JSON Schema validation.
     """
     return [
-        token_launcher_tool.get_tool_definition()
+        token_launcher_tool.get_tool_definition(),
+        token_buyer_tool.get_tool_definition()
     ]
 
 
@@ -120,14 +121,18 @@ async def handle_call_tool(
     Handle tool execution requests.
     Tools can modify server state and notify clients of changes.
     """
-    if name != "launch-token":
+    if name == "launch-token":
+        if not arguments:
+            raise ValueError("Missing arguments for launch-token")
+        # Execute the token launcher tool
+        return await token_launcher_tool.execute(arguments)
+    elif name == "buy-token":
+        if not arguments:
+            raise ValueError("Missing arguments for buy-token")
+        # Execute the token buyer tool
+        return await token_buyer_tool.execute(arguments)
+    else:
         raise ValueError(f"Unknown tool: {name}")
-
-    if not arguments:
-        raise ValueError("Missing arguments")
-
-    # Execute the token launcher tool
-    return await token_launcher_tool.execute(arguments)
 
 
 async def main():

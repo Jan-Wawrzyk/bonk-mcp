@@ -416,7 +416,6 @@ async def create_token(
 async def create_buy_tx(
     payer_keypair: Keypair,
     mint_pubkey: Pubkey,
-    base_token_account: Pubkey,
     amount_in: float,
     minimum_amount_out: float
 ) -> Tuple[Transaction, List[Keypair]]:
@@ -426,7 +425,6 @@ async def create_buy_tx(
     Args:
         payer_keypair: The keypair that will pay for the transaction
         mint_pubkey: The pubkey of the base token mint
-        base_token_account: The user's base token account
         amount_in: Amount of SOL to spend (in SOL)
         minimum_amount_out: Minimum token amount to receive (in tokens)
 
@@ -437,12 +435,22 @@ async def create_buy_tx(
     txn = await setup_transaction(payer_keypair.pubkey())
     additional_signers = []
 
+    # Get token account for the specified mint
+    base_token_account, base_token_instruction = await create_or_get_token_account(
+        payer_keypair.pubkey(),
+        mint_pubkey
+    )
+
     # Create temporary WSOL account
     wsol_token_account, wsol_instructions, wsol_keypair = await create_temporary_wsol_account(
         payer_keypair.pubkey(),
         amount_in
     )
     additional_signers.append(wsol_keypair)
+
+    # Add base token account creation instructions to transaction
+    if base_token_instruction:
+        txn.add(base_token_instruction)
 
     # Add WSOL account creation instructions to transaction
     for ix in wsol_instructions:
