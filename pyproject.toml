@@ -1,6 +1,6 @@
 [project]
 name = "bonk-mcp"
-version = "0.1.3"
+version = "0.1.4"
 description = "A MCP server for Bonk"
 readme = "README.md"
 authors = [{ name = "letsbonk-ai", email = "letsbonkai@gmail.com" }]
