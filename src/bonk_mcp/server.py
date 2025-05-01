@@ -7,7 +7,7 @@ from pydantic import AnyUrl
 import mcp.server.stdio
 
 # Import the tools
-from bonk_mcp.tools import token_launcher_tool, token_buyer_tool
+from bonk_mcp.tools import token_launcher_tool, token_buyer_tool, birdeye_trending_tokens_tool, birdeye_top_traders_tool
 
 # Store notes as a simple key-value dict to demonstrate state management
 notes: dict[str, str] = {}
@@ -109,7 +109,9 @@ async def handle_list_tools() -> list[types.Tool]:
     """
     return [
         token_launcher_tool.get_tool_definition(),
-        token_buyer_tool.get_tool_definition()
+        token_buyer_tool.get_tool_definition(),
+        birdeye_trending_tokens_tool.get_tool_definition(),
+        birdeye_top_traders_tool.get_tool_definition()
     ]
 
 
@@ -131,6 +133,12 @@ async def handle_call_tool(
             raise ValueError("Missing arguments for buy-token")
         # Execute the token buyer tool
         return await token_buyer_tool.execute(arguments)
+    elif name == "birdeye-trending-tokens":
+        # Execute the BirdEye trending tokens tool (no parameters needed)
+        return await birdeye_trending_tokens_tool.execute({})
+    elif name == "birdeye-top-traders":
+        # Execute the BirdEye top traders tool
+        return await birdeye_top_traders_tool.execute(arguments or {})
     else:
         raise ValueError(f"Unknown tool: {name}")
 

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 KEYPAIR = os.getenv("KEYPAIR")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 #############################
 # COMPUTE BUDGET SETTINGS
