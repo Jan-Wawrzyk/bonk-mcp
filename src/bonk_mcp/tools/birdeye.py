@@ -197,47 +197,6 @@ class BirdEyeTopTradersTool:
         # Using hardcoded values: type=today, limit=10
         return await self._get_top_traders("today", 10)
 
-    async def _get_address_details(self, addresses: List[str]) -> Dict[str, Dict]:
-        """
-        Get token details for a list of addresses
-
-        Args:
-            addresses: List of token addresses
-
-        Returns:
-            Dictionary mapping addresses to their details
-        """
-        if not BIRDEYE_API_KEY:
-            return {}
-
-        headers = {
-            "accept": "application/json",
-            "X-API-KEY": str(BIRDEYE_API_KEY),
-            "x-chain": "solana"
-        }
-
-        address_details = {}
-
-        try:
-            # Create a comma-separated list of addresses
-            address_str = ",".join(addresses)
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"https://public-api.birdeye.so/defi/token_trending?sort_by=rank&sort_type=asc&offset=0&limit=20",
-                    headers=headers,
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if result.get("success") and result.get("data"):
-                            tokens = result.get("data", {}).get("tokens", {})
-                            address_details = tokens
-        except Exception:
-            # Silently fail - we'll show addresses without details if this fails
-            pass
-
-        return address_details
-
     async def _get_top_traders(self, time_period: str, limit: int) -> List[TextContent]:
         """
         Get top traders on Solana from BirdEye
@@ -298,9 +257,6 @@ class BirdEyeTopTradersTool:
                     addresses = [trader.get("address")
                                  for trader in traders if trader.get("address")]
 
-                    # Get token details for addresses
-                    address_details = await self._get_address_details(addresses)
-
                     # Format response
                     table_rows = []
                     for i, trader in enumerate(traders):
@@ -309,21 +265,12 @@ class BirdEyeTopTradersTool:
                         volume = trader.get("volume", 0)
                         trade_count = trader.get("trade_count", 0)
 
-                        # Get token details if available
-                        token_details = address_details.get(address, {})
-                        name = token_details.get("name", "Unknown")
-                        symbol = token_details.get("symbol", "Unknown")
-
-                        # Only show token name/symbol if we have details
-                        wallet_display = f"{name} ({symbol})" if token_details else address
-
                         # Add row to table
                         table_rows.append(
-                            f"{i+1}. {wallet_display}\n"
+                            f"{i+1}. {address}\n"
                             f"   PnL: ${pnl:,.2f}\n"
                             f"   Volume: ${volume:,.2f}\n"
                             f"   Trades: {trade_count:,}\n"
-                            f"   Address: {address}\n"
                         )
 
                     # Build full response
