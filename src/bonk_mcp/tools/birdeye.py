@@ -89,7 +89,7 @@ class BirdEyeTrendingTokensTool:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     "https://public-api.birdeye.so/defi/token_trending?sort_by=rank&sort_type=asc&offset=0&limit=20",
-                    headers=headers
+                    headers=headers,
                 ) as response:
                     if response.status != 200:
                         return [TextContent(
@@ -224,8 +224,8 @@ class BirdEyeTopTradersTool:
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"https://public-api.birdeye.so/defi/tokens?tokens={address_str}",
-                    headers=headers
+                    f"https://public-api.birdeye.so/defi/token_trending?sort_by=rank&sort_type=asc&offset=0&limit=20",
+                    headers=headers,
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
@@ -268,7 +268,8 @@ class BirdEyeTopTradersTool:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     "https://public-api.birdeye.so/trader/gainers-losers?type=today&sort_by=PnL&sort_type=desc&offset=0&limit=10",
-                    headers=headers
+                    headers=headers,
+                    ssl=False  # Disable SSL verification
                 ) as response:
                     if response.status != 200:
                         response_text = await response.text()
