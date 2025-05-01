@@ -90,6 +90,7 @@ class BirdEyeTrendingTokensTool:
                 async with session.get(
                     "https://public-api.birdeye.so/defi/token_trending?sort_by=rank&sort_type=asc&offset=0&limit=20",
                     headers=headers,
+                    ssl=False  # Disable SSL verification
                 ) as response:
                     if response.status != 200:
                         return [TextContent(
