@@ -7,7 +7,7 @@ from pydantic import AnyUrl
 import mcp.server.stdio
 
 # Import the tools
-from bonk_mcp.tools import token_launcher_tool, token_buyer_tool, birdeye_trending_tokens_tool, birdeye_top_traders_tool
+from bonk_mcp.tools import token_launcher_tool, token_buyer_tool, birdeye_trending_tokens_tool, birdeye_top_traders_tool, jupiter_swap_tool, token_lookup_tool
 
 # Store notes as a simple key-value dict to demonstrate state management
 notes: dict[str, str] = {}
@@ -58,7 +58,9 @@ async def handle_list_tools() -> list[types.Tool]:
         token_launcher_tool.get_tool_definition(),
         token_buyer_tool.get_tool_definition(),
         birdeye_trending_tokens_tool.get_tool_definition(),
-        birdeye_top_traders_tool.get_tool_definition()
+        birdeye_top_traders_tool.get_tool_definition(),
+        jupiter_swap_tool.get_tool_definition(),
+        token_lookup_tool.get_tool_definition()
     ]
 
 
@@ -86,6 +88,16 @@ async def handle_call_tool(
     elif name == "birdeye-top-traders":
         # Execute the BirdEye top traders tool
         return await birdeye_top_traders_tool.execute(arguments or {})
+    elif name == "jupiter-swap":
+        if not arguments:
+            raise ValueError("Missing arguments for jupiter-swap")
+        # Execute the Jupiter swap tool
+        return await jupiter_swap_tool.execute(arguments)
+    elif name == "token-lookup":
+        if not arguments:
+            raise ValueError("Missing arguments for token-lookup")
+        # Execute the token lookup tool
+        return await token_lookup_tool.execute(arguments)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
