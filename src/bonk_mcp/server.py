@@ -7,16 +7,7 @@ from pydantic import AnyUrl
 import mcp.server.stdio
 
 # Import the tools
-from bonk_mcp.tools import (
-    token_launcher_tool,
-    token_buyer_tool,
-    birdeye_trending_tokens_tool,
-    birdeye_top_traders_tool,
-    jupiter_swap_tool,
-    token_lookup_tool,
-    sol_transfer_tool,
-    token_transfer_tool
-)
+from bonk_mcp.tools import token_launcher_tool, token_buyer_tool, birdeye_trending_tokens_tool, birdeye_top_traders_tool, jupiter_swap_tool, token_lookup_tool
 
 # Store notes as a simple key-value dict to demonstrate state management
 notes: dict[str, str] = {}
@@ -69,9 +60,7 @@ async def handle_list_tools() -> list[types.Tool]:
         birdeye_trending_tokens_tool.get_tool_definition(),
         birdeye_top_traders_tool.get_tool_definition(),
         jupiter_swap_tool.get_tool_definition(),
-        token_lookup_tool.get_tool_definition(),
-        sol_transfer_tool.get_tool_definition(),
-        token_transfer_tool.get_tool_definition()
+        token_lookup_tool.get_tool_definition()
     ]
 
 
@@ -109,16 +98,6 @@ async def handle_call_tool(
             raise ValueError("Missing arguments for token-lookup")
         # Execute the token lookup tool
         return await token_lookup_tool.execute(arguments)
-    elif name == "sol-transfer":
-        if not arguments:
-            raise ValueError("Missing arguments for sol-transfer")
-        # Execute the SOL transfer tool
-        return await sol_transfer_tool.execute(arguments)
-    elif name == "token-transfer":
-        if not arguments:
-            raise ValueError("Missing arguments for token-transfer")
-        # Execute the token transfer tool
-        return await token_transfer_tool.execute(arguments)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
