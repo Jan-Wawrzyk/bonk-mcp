@@ -2,18 +2,17 @@ import struct
 import traceback
 import aiohttp
 import json
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple
 
-from solana.transaction import Transaction
-from solana.rpc.types import TokenAccountOpts, TxOpts
-from spl.token.instructions import (
-    create_associated_token_account,
-    get_associated_token_address
-)
 from solders.pubkey import Pubkey
-from solders.instruction import Instruction
+from solders.instruction import Instruction, AccountMeta
 from solders.keypair import Keypair
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+from solders.transaction import Transaction
+from solders.system_program import CreateAccountParams, create_account
+
+from solana.rpc.types import TxOpts  # for the solana-py client wrapper used below
+from solana.rpc.api import RPCException
 
 from bonk_mcp.settings import (
     client,
@@ -21,76 +20,133 @@ from bonk_mcp.settings import (
     UNIT_BUDGET,
     TOKEN_PROGRAM,
     SOL_DECIMAL,
-    WSOL_TOKEN
+    WSOL_TOKEN,
+    ASSOC_TOKEN_ACC_PROG,
+    SYSTEM_PROGRAM,
+    RENT,
 )
 
-from solders.system_program import CreateAccountParams, create_account
-from solana.rpc.api import RPCException
-from spl.token.instructions import initialize_account, close_account, CloseAccountParams, InitializeAccountParams
+# SPL token instruction discriminators
+SPL_TOKEN_INITIALIZE_ACCOUNT = bytes([1])  # InitializeAccount
+SPL_TOKEN_CLOSE_ACCOUNT = bytes([9])  # CloseAccount
 
 
 def buffer_from_string(string_data: str) -> bytes:
     """Convert string to buffer with length prefix"""
-    str_bytes = string_data.encode('utf-8')
+    str_bytes = string_data.encode("utf-8")
     length = len(str_bytes)
-    return struct.pack('<I', length) + str_bytes
+    return struct.pack("<I", length) + str_bytes
 
 
 async def setup_transaction(payer_pubkey: Pubkey) -> Transaction:
     """Create and setup a new transaction with compute budget"""
     txn = Transaction(
         recent_blockhash=(await client.get_latest_blockhash()).value.blockhash,
-        fee_payer=payer_pubkey
+        fee_payer=payer_pubkey,
     )
-
     txn.add(set_compute_unit_price(UNIT_PRICE))
     txn.add(set_compute_unit_limit(UNIT_BUDGET))
-
     return txn
 
 
-async def create_or_get_token_account(owner: Pubkey, mint: Pubkey) -> Tuple[Pubkey, Optional[Instruction]]:
-    """Create or retrieve token account"""
+# ------------------ ATA derivation + creation ------------------ #
+
+
+def get_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
+    token_program_pubkey = Pubkey.from_string(str(TOKEN_PROGRAM))
+    assoc_prog = Pubkey.from_string(str(ASSOC_TOKEN_ACC_PROG))
+    seeds = [bytes(owner), bytes(token_program_pubkey), bytes(mint)]
+    ata, _ = Pubkey.find_program_address(seeds, assoc_prog)
+    return ata
+
+
+def create_associated_token_account_instruction(
+    payer: Pubkey, owner: Pubkey, mint: Pubkey
+) -> Tuple[Pubkey, Instruction]:
+    ata = get_associated_token_address(owner, mint)
+    assoc_prog = Pubkey.from_string(str(ASSOC_TOKEN_ACC_PROG))
+    token_prog = Pubkey.from_string(str(TOKEN_PROGRAM))
+    system_prog = Pubkey.from_string(str(SYSTEM_PROGRAM))
+    rent_sysvar = Pubkey.from_string(str(RENT))
+
+    metas = [
+        AccountMeta(pubkey=payer, is_signer=True, is_writable=True),  # payer
+        AccountMeta(pubkey=ata, is_signer=False, is_writable=True),  # ATA
+        AccountMeta(pubkey=owner, is_signer=False, is_writable=False),  # wallet owner
+        AccountMeta(pubkey=mint, is_signer=False, is_writable=False),  # mint
+        AccountMeta(pubkey=system_prog, is_signer=False, is_writable=False),  # system program
+        AccountMeta(pubkey=token_prog, is_signer=False, is_writable=False),  # token program
+        AccountMeta(pubkey=rent_sysvar, is_signer=False, is_writable=False),  # rent
+    ]
+
+    # Debug
+    print("Building ATA create instruction, metas:")
+    for i, m in enumerate(metas):
+        print(f"  {i}: {m.pubkey} signer={m.is_signer} writable={m.is_writable}")
+
+    ix = Instruction(assoc_prog, b"", metas)
+    return ata, ix
+
+
+async def create_or_get_token_account(
+    payer: Pubkey, owner: Pubkey, mint: Pubkey
+) -> Tuple[Pubkey, Optional[Instruction]]:
+    ata = get_associated_token_address(owner, mint)
+    print(
+        ">>> ATA debug:",
+        {
+            "payer": str(payer),
+            "owner": str(owner),
+            "mint": str(mint),
+            "ata": str(ata),
+        },
+    )
     try:
-        account_data = await client.get_token_accounts_by_owner(owner, TokenAccountOpts(mint))
-        return account_data.value[0].pubkey, None
-    except:
-        token_account = get_associated_token_address(owner, mint)
-        token_account_ix = create_associated_token_account(owner, owner, mint)
-        return token_account, token_account_ix
-
-
-async def send_and_confirm_transaction(txn: Transaction, *signers, skip_preflight: bool = True, confirm: bool = False) -> bool:
-    """Send and confirm a transaction"""
-    try:
-        txn_sig = await client.send_transaction(
-            txn,
-            *signers,
-            opts=TxOpts(skip_preflight=skip_preflight, max_retries=3)
-        )
-        print("Transaction Signature:", txn_sig.value)
-
-        # Wait for confirmation
-        if confirm:
-            status = await client.confirm_transaction(txn_sig.value)
-            return status
-        else:
-            return txn_sig.value
+        info = await client.get_account_info(ata)
+        if info.value is not None:
+            return ata, None
     except Exception as e:
-        print(f"Transaction error: {traceback.format_exc()}")
-        return False
+        print("Warning fetching ATA info:", e)
+
+    ata, ix = create_associated_token_account_instruction(payer, owner, mint)
+    return ata, ix
+
+
+# ------------------ Transaction utils ------------------ #
+
+
+async def send_and_confirm_transaction(
+    txn: Transaction, *signers, skip_preflight: bool = True, confirm: bool = False
+) -> bool:
+    """Send and confirm a transaction with simple rate-limit backoff."""
+    backoff = 1
+    for attempt in range(1, 4):
+        try:
+            txn_sig = await client.send_transaction(
+                txn, *signers, opts=TxOpts(skip_preflight=skip_preflight, max_retries=1)
+            )
+            print("Transaction Signature:", txn_sig.value)
+            if confirm:
+                status = await client.confirm_transaction(txn_sig.value)
+                return status
+            return txn_sig.value
+        except Exception as e:
+            err_str = str(e)
+            print(f"Transaction error (attempt {attempt}): {err_str}")
+            if "429" in err_str or "Too Many Requests" in err_str:
+                if attempt == 3:
+                    break
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+            break
+    return False
+
+
+# ------------------ WSOL & IPFS logic ------------------ #
 
 
 async def download_image(image_url: str) -> Optional[bytes]:
-    """
-    Download image from a URL
-
-    Args:
-        image_url: URL of the image to download
-
-    Returns:
-        Image data as bytes if successful, None if failed
-    """
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as response:
@@ -113,126 +169,74 @@ async def prepare_ipfs(
     website: str = "",
     image_url: str = None,
     image_data: bytes = None,
-    file: Optional[str] = None
+    file: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Prepare IPFS metadata for a token using gated.chat APIs
-
-    Args:
-        name: Token name
-        symbol: Token symbol/ticker
-        description: Token description
-        twitter: Twitter handle/URL (optional)
-        telegram: Telegram group URL (optional)
-        website: Website URL (optional)
-        image_url: Direct URL to image (if already available)
-        image_data: Raw image data bytes (if already downloaded)
-        file: Path to local image file (if available)
-
-    Returns:
-        IPFS URI if successful, None if failed
-    """
     try:
-        # Step 1: Get or upload image
-        # If we already have a valid Pinata URL, use it directly
-        if image_url and image_url.startswith("https://sapphire-working-koi-276.mypinata.cloud/ipfs/"):
+        if image_url and image_url.startswith(
+            "https://sapphire-working-koi-276.mypinata.cloud/ipfs/"
+        ):
             print(f"Using provided Pinata image URL: {image_url}")
         else:
-            # Otherwise, we need to upload an image
-            # Priority: image_data > file > image_url
             data_to_upload = None
-
             if image_data:
-                # Use provided image data directly
                 data_to_upload = image_data
-                print("Using provided image data for upload")
             elif file:
-                # Read from local file
                 try:
                     with open(file, "rb") as f:
                         data_to_upload = f.read()
-                    print(f"Read image data from file: {file}")
                 except Exception as e:
-                    print(f"Error reading file: {str(e)}")
+                    print(f"Error reading file: {e}")
             elif image_url:
-                # Download from URL
                 data_to_upload = await download_image(image_url)
                 if not data_to_upload:
                     print(f"Failed to download image from URL: {image_url}")
 
-            # If we have data to upload, do it
             if data_to_upload:
-                # Upload using direct method with fixed boundary
-                try:
-                    # Fixed boundary string
-                    boundary = "----WebKitFormBoundarymkE1BAuPXiGrhrdB"
-
-                    # Create the multipart form data manually
-                    body = b""
-                    body += f"--{boundary}\r\n".encode('utf-8')
-                    body += b'Content-Disposition: form-data; name="image"; filename="image.jpg"\r\n'
-                    body += b'Content-Type: image/jpeg\r\n\r\n'
-                    body += data_to_upload
-                    body += f"\r\n--{boundary}--\r\n".encode('utf-8')
-
-                    headers = {
-                        "accept": "application/json, text/plain, */*",
-                        "accept-language": "en-US,en;q=0.9",
-                        "content-type": f"multipart/form-data; boundary={boundary}",
-                        "sec-fetch-dest": "empty",
-                        "sec-fetch-mode": "cors",
-                        "sec-fetch-site": "cross-site",
-                        "referrer": "https://letsbonk.fun/",
-                    }
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            "https://gated.chat/upload/img",
-                            data=body,
-                            headers=headers
-                        ) as response:
-                            print(f"Image upload status: {response.status}")
-                            response_text = await response.text()
-
-                            if response.status == 200:
-                                # The API returns the URL directly as plain text
-                                if response_text.startswith("https://"):
-                                    image_url = response_text.strip()
-                                    print(
-                                        f"Successfully uploaded image: {image_url}")
-                                else:
-                                    # Try to parse as JSON just in case
-                                    try:
-                                        result = json.loads(response_text)
-                                        image_url = result.get("url")
-                                        if image_url:
-                                            print(
-                                                f"Successfully uploaded image: {image_url}")
-                                    except json.JSONDecodeError:
-                                        pass
-
-                            if not image_url:
-                                print(f"Image upload error: {response_text}")
-                                return None
-                except Exception as e:
-                    print(f"Error uploading image: {str(e)}")
-                    return None
-
-            # If we still don't have an image URL, use a default
+                boundary = "----WebKitFormBoundarymkE1BAuPXiGrhrdB"
+                body = b""
+                body += f"--{boundary}\r\n".encode("utf-8")
+                body += b'Content-Disposition: form-data; name="image"; filename="image.jpg"\r\n'
+                body += b"Content-Type: image/jpeg\r\n\r\n"
+                body += data_to_upload
+                body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+                headers = {
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": f"multipart/form-data; boundary={boundary}",
+                    "sec-fetch-dest": "empty",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-site": "cross-site",
+                    "referrer": "https://letsbonk.fun/",
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://gated.chat/upload/img", data=body, headers=headers
+                    ) as response:
+                        response_text = await response.text()
+                        if response.status == 200:
+                            if response_text.startswith("https://"):
+                                image_url = response_text.strip()
+                                print(f"Successfully uploaded image: {image_url}")
+                            else:
+                                try:
+                                    result = json.loads(response_text)
+                                    image_url = result.get("url")
+                                except json.JSONDecodeError:
+                                    pass
+                        if not image_url:
+                            print(f"Image upload error: {response_text}")
+                            return None
             if not image_url:
                 image_url = "https://sapphire-working-koi-276.mypinata.cloud/ipfs/bafybeihpy352xnqgn74nrjj6bgxndrss5nbqix4kfhwfanoyo766tgwzz4"
                 print(f"Using default image URL: {image_url}")
 
-        # Step 2: Create and upload metadata
         metadata = {
             "name": name,
             "symbol": symbol,
             "description": description,
             "createdOn": "https://bonk.fun",
-            "image": image_url
+            "image": image_url,
         }
-
-        # Add optional social links if provided
         if twitter:
             metadata["twitter"] = twitter
         if telegram:
@@ -240,9 +244,7 @@ async def prepare_ipfs(
         if website:
             metadata["website"] = website
 
-        # Upload metadata
         print(f"Uploading metadata for {name} ({symbol})...")
-
         headers = {
             "accept": "application/json, text/plain, */*",
             "accept-language": "en-US,en;q=0.9",
@@ -251,26 +253,18 @@ async def prepare_ipfs(
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "cross-site",
             "referrer": "https://letsbonk.fun/",
-            "origin": "https://letsbonk.fun"
+            "origin": "https://letsbonk.fun",
         }
-
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://gated.chat/upload/meta",
-                json=metadata,
-                headers=headers
+                "https://gated.chat/upload/meta", json=metadata, headers=headers
             ) as response:
-                print(f"Metadata upload status: {response.status}")
                 response_text = await response.text()
-
                 if response.status == 200:
-                    # The API might return the URL directly as plain text
                     if response_text.startswith("https://"):
                         metadata_uri = response_text.strip()
                         print(f"Metadata uploaded, direct URL: {metadata_uri}")
                         return metadata_uri
-
-                    # Try to parse as JSON just in case
                     try:
                         result = json.loads(response_text)
                         metadata_uri = result.get("url")
@@ -278,99 +272,72 @@ async def prepare_ipfs(
                             print(f"Metadata uploaded: {metadata_uri}")
                             return metadata_uri
                     except json.JSONDecodeError:
-                        # Already handled above
                         pass
-
                 print(f"Metadata upload error: {response_text}")
                 return None
-
-    except Exception as e:
+    except Exception:
         print(f"Error preparing IPFS metadata: {traceback.format_exc()}")
         return None
 
 
 def calculate_tokens_receive(sol_amount, previous_sol=30, slippage=5):
-    """
-    Calculate tokens received for given SOL amount
-    """
-    LAMPORTS_PER_SOL = 10**9
-    TOKEN_DECIMALS = 10**6
+    LAMPORTS_PER_SOL = 10 ** 9
+    TOKEN_DECIMALS = 10 ** 6
+    INITIAL_TOKENS = 1073000191 * TOKEN_DECIMALS
+    K = 32190005730 * TOKEN_DECIMALS
 
-    INITIAL_TOKENS = 1073000191 * TOKEN_DECIMALS  # Convert to token units
-    K = 32190005730 * TOKEN_DECIMALS  # Convert to token units
+    previous_lamports = int(previous_sol * 10 ** LAMPORTS_PER_SOL)
+    new_lamports = previous_lamports + int(sol_amount * 10 ** LAMPORTS_PER_SOL)
 
-    # Convert SOL to lamports
-    previous_lamports = int(previous_sol * LAMPORTS_PER_SOL)
-    new_lamports = previous_lamports + int(sol_amount * LAMPORTS_PER_SOL)
-
-    # Calculate tokens
-    current_tokens = INITIAL_TOKENS - \
-        (K / (previous_lamports / LAMPORTS_PER_SOL))
+    current_tokens = INITIAL_TOKENS - (K / (previous_lamports / LAMPORTS_PER_SOL))
     new_tokens = INITIAL_TOKENS - (K / (new_lamports / LAMPORTS_PER_SOL))
 
-    # Calculate difference in tokens
-    tokens_received = (new_tokens - current_tokens) / TOKEN_DECIMALS * 1
-    max_sol_cost = sol_amount * (1 + slippage/100)
+    tokens_received = (new_tokens - current_tokens) / TOKEN_DECIMALS
+    max_sol_cost = sol_amount * (1 + slippage / 100)
 
-    return {
-        "token_amount": tokens_received,
-        "max_sol_cost": max_sol_cost
-    }
+    return {"token_amount": tokens_received, "max_sol_cost": max_sol_cost}
 
 
 async def create_temporary_wsol_account(
-    payer_pubkey: Pubkey,
-    amount: float
-) -> tuple[Pubkey, list[Instruction]]:
+    payer_pubkey: Pubkey, amount: float
+) -> tuple[Pubkey, list[Instruction], Keypair]:
     """
-    Create a temporary WSOL token account with the specified amount of SOL.
-
-    Args:
-        payer_pubkey: The pubkey of the payer who will fund the account
-        amount: Amount of SOL to fund the account with (in SOL)
-
-    Returns:
-        A tuple containing the token account pubkey and a list of instructions to add to a transaction
+    Create a temporary WSOL token account and initialize it properly.
     """
-
-    # Create a temporary keypair for the WSOL account
     wsol_keypair = Keypair()
     wsol_token_account = wsol_keypair.pubkey()
 
-    # Get minimum rent
     try:
-        min_rent = await client.get_minimum_balance_for_rent_exemption(165)
-        min_rent = min_rent.value
-    except RPCException:
-        # Fallback if API call fails
-        min_rent = 2039280  # Standard rent for token account
+        min_rent_resp = await client.get_minimum_balance_for_rent_exemption(165)
+        min_rent = min_rent_resp.value
+    except Exception:
+        min_rent = 2039280  # fallback
 
-    # Amount to fund (rent + SOL for swap)
-    lamports = min_rent + int(amount * 10**SOL_DECIMAL)
+    lamports = min_rent + int(amount * 10 ** SOL_DECIMAL)
+    instructions: list[Instruction] = []
 
-    # Create instructions
-    instructions = []
-
-    # Create account for WSOL
+    # 1. Create account
     create_wsol_account_ix = create_account(
         CreateAccountParams(
             from_pubkey=payer_pubkey,
             to_pubkey=wsol_token_account,
             lamports=lamports,
             space=165,
-            owner=TOKEN_PROGRAM
+            owner=Pubkey.from_string(str(TOKEN_PROGRAM)),
         )
     )
     instructions.append(create_wsol_account_ix)
 
-    # Initialize token account
-    init_wsol_account_ix = initialize_account(
-        InitializeAccountParams(
-            program_id=TOKEN_PROGRAM,
-            account=wsol_token_account,
-            mint=WSOL_TOKEN,
-            owner=payer_pubkey
-        )
+    # 2. Initialize account for WSOL mint
+    init_wsol_account_ix = Instruction(
+        Pubkey.from_string(str(TOKEN_PROGRAM)),
+        SPL_TOKEN_INITIALIZE_ACCOUNT,
+        [
+            AccountMeta(pubkey=wsol_token_account, is_signer=False, is_writable=True),  # account
+            AccountMeta(pubkey=Pubkey.from_string(str(WSOL_TOKEN)), is_signer=False, is_writable=False),  # mint
+            AccountMeta(pubkey=payer_pubkey, is_signer=False, is_writable=False),  # owner
+            AccountMeta(pubkey=Pubkey.from_string(str(RENT)), is_signer=False, is_writable=False),  # rent
+        ],
     )
     instructions.append(init_wsol_account_ix)
 
@@ -378,36 +345,23 @@ async def create_temporary_wsol_account(
 
 
 async def get_close_wsol_instruction(
-    wsol_token_account: Pubkey,
-    owner: Pubkey
+    wsol_token_account: Pubkey, owner: Pubkey
 ) -> Instruction:
     """
-    Get instruction to close a WSOL account and recover SOL
-
-    Args:
-        wsol_token_account: The WSOL token account to close
-        owner: The owner of the token account who will receive the SOL
-
-    Returns:
-        Close account instruction
+    Close WSOL account to recover SOL.
     """
-    from spl.token.instructions import close_account, CloseAccountParams
-    from bonk_mcp.settings import TOKEN_PROGRAM
-
-    close_wsol_account_ix = close_account(
-        CloseAccountParams(
-            account=wsol_token_account,
-            dest=owner,
-            owner=owner,
-            program_id=TOKEN_PROGRAM
-        )
+    close_wsol_account_ix = Instruction(
+        Pubkey.from_string(str(TOKEN_PROGRAM)),
+        SPL_TOKEN_CLOSE_ACCOUNT,
+        [
+            AccountMeta(pubkey=wsol_token_account, is_signer=False, is_writable=True),  # account to close
+            AccountMeta(pubkey=owner, is_signer=False, is_writable=True),  # destination
+            AccountMeta(pubkey=owner, is_signer=True, is_writable=False),  # authority
+        ],
     )
-
     return close_wsol_account_ix
 
+
 async def get_token_account_balance(token_account: Pubkey) -> int:
-    """
-    Get the balance of a token account
-    """
     balance = await client.get_token_account_balance(token_account)
     return balance.value.amount

@@ -403,15 +403,14 @@ async def create_token(
 
     # Create token account for the new mint
     base_token_account, base_token_account_ix = await create_or_get_token_account(
-        payer_keypair.pubkey(),
-        mint_keypair.pubkey()
-    )
-
+    payer_keypair.pubkey(),  # payer
+    payer_keypair.pubkey(),  # owner
+    mint_keypair.pubkey()    # mint
+)
     if base_token_account_ix:
         txn.add(base_token_account_ix)
 
     return txn, base_token_account
-
 
 async def create_buy_tx(
     payer_keypair: Keypair,
@@ -419,47 +418,39 @@ async def create_buy_tx(
     amount_in: float,
     minimum_amount_out: float
 ) -> Tuple[Transaction, List[Keypair]]:
-    """
-    Create a transaction for buying tokens on Raydium Launchpad
-
-    Args:
-        payer_keypair: The keypair that will pay for the transaction
-        mint_pubkey: The pubkey of the base token mint
-        amount_in: Amount of SOL to spend (in SOL)
-        minimum_amount_out: Minimum token amount to receive (in tokens)
-
-    Returns:
-        Tuple of (Transaction, list of additional signers)
-    """
-    # Setup transaction
     txn = await setup_transaction(payer_keypair.pubkey())
-    additional_signers = []
+    additional_signers: List[Keypair] = []
 
-    # Get token account for the specified mint
-    base_token_account, base_token_instruction = await create_or_get_token_account(
+    # 1. Ensure buyer's ATA exists
+    base_token_account, base_token_account_ix = await create_or_get_token_account(
+        payer_keypair.pubkey(),
         payer_keypair.pubkey(),
         mint_pubkey
     )
+    if base_token_account_ix:
+        txn.add(base_token_account_ix)
 
-    # Create temporary WSOL account
+    # Debug/info
+    print(">>> Buying: base token ATA:", base_token_account)
+    try:
+        info = await client.get_account_info(base_token_account)
+        print("    ATA exists on-chain:", info.value is not None)
+    except Exception as e:
+        print("    Failed to fetch ATA info:", e)
+
+    # 2. Create temporary WSOL account for payment
     wsol_token_account, wsol_instructions, wsol_keypair = await create_temporary_wsol_account(
         payer_keypair.pubkey(),
         amount_in
     )
     additional_signers.append(wsol_keypair)
-
-    # Add base token account creation instructions to transaction
-    if base_token_instruction:
-        txn.add(base_token_instruction)
-
-    # Add WSOL account creation instructions to transaction
     for ix in wsol_instructions:
         txn.add(ix)
 
-    # Derive PDAs
+    # 3. Derive PDAs for the pool
     pdas = await derive_pdas(mint_pubkey)
 
-    # Create buy instruction
+    # 4. Buy instruction
     buy_ix = create_buy_instruction(
         payer_pubkey=payer_keypair.pubkey(),
         pool_state_pda=pdas["pool_state"],
@@ -473,7 +464,7 @@ async def create_buy_tx(
     )
     txn.add(buy_ix)
 
-    # Close WSOL account to recover SOL at the end
+    # 5. Close WSOL to recover leftover SOL
     close_wsol_ix = await get_close_wsol_instruction(
         wsol_token_account,
         payer_keypair.pubkey()
@@ -481,7 +472,6 @@ async def create_buy_tx(
     txn.add(close_wsol_ix)
 
     return txn, additional_signers
-
 
 async def launch_token_with_buy(
     payer_keypair: Keypair,

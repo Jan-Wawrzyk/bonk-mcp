@@ -16,6 +16,7 @@ class TokenLauncherTool:
     """Tool for launching meme tokens on Solana using the Raydium launchpad"""
 
     def __init__(self):
+
         self.name = "launch-token"
         self.description = "Launch a new meme token on Solana using Raydium launchpad"
         self.input_schema = {
